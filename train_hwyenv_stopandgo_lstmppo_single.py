@@ -15,23 +15,13 @@ HighwayStopEnvLSTM : POMDP baseline; only raw kinematics + normalised
 Reference: arXiv 2308.05937
 """
 
-import sys
-import os
-
-# Add local HighwayEnv to path BEFORE importing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'HighwayEnv'))
-
 import gymnasium as gym
 from gymnasium import spaces
-import highway_env  # Uses local HighwayEnv/highway_env
+import highway_env  # side-effect: registers highway-v0 with Gymnasium
 from stable_baselines3 import PPO
 import numpy as np
-import math
 from train_callback import TrainStatsCallback
-from highway_env import utils
-from highway_env.vehicle.behavior import IDMVehicle
 from highway_env.vehicle.controller import ControlledVehicle
-from highway_env.vehicle.realistic import RealisticVehicle, IntersectionState
 from reward_machine.reward_machine import RewardMachine
 
 try:
