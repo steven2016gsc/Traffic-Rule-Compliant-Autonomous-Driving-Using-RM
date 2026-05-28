@@ -75,7 +75,7 @@ for _noisy in ('train_sumo_intersection_fcfs_lstmppo',
 # Hyper-parameters
 # =============================================================================
 N_SEEDS       = 10
-TOTAL_STEPS   = 65536       # same as RM multiseed
+TOTAL_STEPS   = 2048 * 60
 EVAL_FREQ     = 4096
 EVAL_EPISODES = 100
 N_CHECKPOINTS = TOTAL_STEPS // EVAL_FREQ
@@ -188,6 +188,7 @@ def _evaluate_inline(
             if not ep_stopped and event == 's':
                 ep_stopped  = True
                 # curr_d_stop = state['dist_to_stop_line'] # Stopping precision for correct stops at the stop sign
+                cor_d_stop = state['dist_to_stop_line']
 
             if abs(state['v_e']) < 0.1 and not stop_counter:
                 curr_d_stop = state['dist_to_stop_line'] # Stopping precision for ordinary stops
@@ -211,8 +212,9 @@ def _evaluate_inline(
             n_col += 1
         if ep_stopped:
             n_stopped  += 1
-        if curr_d_stop is not None:
-            sum_d_stop += curr_d_stop
+            sum_d_stop += cor_d_stop
+        # if curr_d_stop is not None:
+        #     sum_d_stop += curr_d_stop
         if ep_passed and not ep_stopped:
             n_pass += 1
         if ep_yv:
@@ -225,8 +227,8 @@ def _evaluate_inline(
     M_safe     = 100.0 * (1 - n_col  / N)
     M_stop     = 100.0 * n_stopped / N
     M_yield    = 100.0 * (1 - n_yv   / N)
-    # avg_d_stop = sum_d_stop / n_stopped if n_stopped > 0 else float('nan') # Strict avg_ds
-    avg_d_stop = sum_d_stop / (N-n_pass) if n_stopped > 0 else float('nan') # Relaxed avg_ds
+    avg_d_stop = sum_d_stop / n_stopped if n_stopped > 0 else float('nan') # Strict avg_ds
+    # avg_d_stop = sum_d_stop / (N-n_pass) if n_stopped > 0 else float('nan') # Relaxed avg_ds
 
     return M_goal, M_safe, M_stop, M_yield, avg_d_stop
 
