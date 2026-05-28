@@ -1,37 +1,28 @@
 """
-Training and Testing: Single-Way Stop-signed Intersection
-  — Reward Machine PPO  (HighwayStopEnvRM)
-  — LSTM-PPO Baseline   (HighwayStopEnvLSTM)
+Training and Testing with Single-Way Stop-signed Intersection + Reward Machine
 
-HighwayStopEnvRM   : product-MDP wrapper; RM state is appended to the
-                     observation and the RM gates reward delivery.
-HighwayStopEnvLSTM : POMDP baseline; only raw kinematics + normalised
-                     distance are observed.  The hidden env variable
-                     `has_stopped` is never exposed, forcing the LSTM
-                     hidden state to maintain an implicit belief over
-                     task phases (approach → stop → proceed).
-                     Trained with RecurrentPPO (sb3_contrib) on recurrent
-                     rollout chunks of up to 64 policy steps.
-
-Reference: arXiv 2308.05937
+This script integrates the stop-sign reward machine with
+the default intersection environment.
 """
+
+# import sys
+# import os
+
+# # Add local HighwayEnv to path BEFORE importing
+# sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'HighwayEnv'))
 
 import gymnasium as gym
 from gymnasium import spaces
-import highway_env  # side-effect: registers highway-v0 with Gymnasium
-from stable_baselines3 import PPO
-from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+import highway_env  # not using local HighwayEnv/highway_env but registers highway-v0 with Gymnasium
+from stable_baselines3 import PPO, DQN
 import numpy as np
-from torch import nn
+import math
 from train_callback import TrainStatsCallback
+from highway_env import utils
+#from highway_env.vehicle.behavior import IDMVehicle
 from highway_env.vehicle.controller import ControlledVehicle
+#from highway_env.vehicle.realistic import RealisticVehicle, IntersectionState
 from reward_machine.reward_machine import RewardMachine
-
-try:
-    from sb3_contrib import RecurrentPPO
-    HAS_RECURRENT_PPO = True
-except ImportError:
-    HAS_RECURRENT_PPO = False
 
 from matplotlib import pyplot as plt
 import imageio
@@ -78,36 +69,13 @@ def draw_stop_line(frame, env, stop_line_x, ego_vehicle):
     return frame
 
 
-class DenseRecurrentFeatureExtractor(BaseFeaturesExtractor):
-    """
-    Dense feature module used before the recurrent layer.
-
-    SB3-contrib's default MlpLstmPolicy applies ``net_arch`` after the LSTM.
-    This extractor implements the manuscript-style ordering
-    s_t -> Dense(256) -> ReLU -> Dense(128) -> ReLU -> LSTM(128).
-    """
-
-    def __init__(self, observation_space: spaces.Box, features_dim: int = 128):
-        super().__init__(observation_space, features_dim)
-        input_dim = int(np.prod(observation_space.shape))
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, features_dim),
-            nn.ReLU(),
-        )
-
-    def forward(self, observations):
-        return self.net(observations.float())
-
-
 class HighwayStopEnvRM(gym.Wrapper):
     """
-    Product MDP with Reward Machine Wrapping for highway-v0 to enforce a Stop-and-Go task at X = Start + 150m.
+    Product MDP with Reward Machine Wrapping for highway-v0 to enforce a Stop-and-Go task at X = Start + 60m.
 
     Enforces: Approach -> Stop (Speed=0 at Line) -> Cross -> Goal
     """
-    def __init__(self, env, rm, delta_t=None, a_max=5.0, a_min=-6.0, a_min_c=-5.0):
+    def __init__(self, env, rm, delta_t=None, a_max=6.0, a_min=-6.0, a_min_c=-5.0):
         super().__init__(env)
         self.rm = rm
         # Count only non-terminal states (exclude -1) for observation encoding
@@ -122,8 +90,8 @@ class HighwayStopEnvRM(gym.Wrapper):
         self.STOP_SPEED_THRESH = 0.1  # m/s - relaxed to make stopping easier to detect
         # Distance from center where the stop line is located
         self.STOP_ZONE_START = 0.0
-        self.STOP_ZONE_END = 20.0  # Stop zone: within 20m of stop line
-        self.GOAL = 20.0
+        self.STOP_ZONE_END = 20.0  # Stop zone: within 10m of stop line
+        self.GOAL = 50.0
         self.STOP_REGISTRATION_DISTANCE = 5
         self.REACT_TO_BRAKE = self.STOP_ZONE_END  # Trigger forced stop at 50m (gives time to brake from 20 m/s)
 
@@ -599,486 +567,303 @@ class HighwayStopEnvRM(gym.Wrapper):
     
 
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LSTM-PPO Baseline Environment
-# ─────────────────────────────────────────────────────────────────────────────
-
-class HighwayStopEnvLSTM(gym.Wrapper):
-    """
-    POMDP environment for the LSTM-PPO baseline (arXiv 2308.05937).
-
-    Designed as the direct methodological foil to HighwayStopEnvRM:
-
-    Observation  — raw kinematics (vehicles_count × features) flattened,
-                   plus one scalar: normalised distance-to-stop-line.
-                   The RM state one-hot is deliberately omitted so the policy
-                   cannot read off the task phase from a privileged symbol;
-                   it must maintain an implicit belief via h_t.
-
-    Hidden state — `has_stopped` (bool) lives in the environment object and
-                   is never included in the observation.  This creates the
-                   POMDP: identical kinematic snapshots s_t can require
-                   different actions depending on whether the ego has already
-                   completed the stop, a distinction that is unobservable in
-                   a single frame.  The LSTM must integrate past observations
-                   to resolve this ambiguity.
-
-                  Reward       — mirrors the RM-file scale (stop=+50, goal=+100,
-                   collision/passed=−100) but delivered via physical-state
-                   conditions rather than automaton-state gates, so the same
-                   signal is available without privileged structure:
-
-                   · Approach  (dist_s > 0): RSS shaping + potential-based
-                     progress when the RSS gap is safe; RSS violation penalty
-                     when the gap is unsafe.
-                   · Stop zone & speed≈0 (first occurrence): +50.
-                   · Crossed stop line without stopping: −100, episode ends.
-                   · Past stop line (dist_s < 0, has_stopped): speed reward
-                     proportional to v_e (identical to RM state-3 formula).
-                   · Goal (dist_s ≤ −GOAL, has_stopped): +100, episode ends.
-                   · Collision: −100, episode ends.
-
-                  Policy       — RecurrentPPO (sb3_contrib) with MlpLstmPolicy:
-                     Feature extractor : Dense(256)→ReLU→Dense(128)→ReLU
-                     Recurrent layer   : LSTM(128)
-                     Heads             : categorical action logits and V(h_t)
-                   batch_size=64 caps recurrent training chunks at up to
-                   64 policy steps, i.e. about 12.8 s at 5 Hz.
-    """
-
-    # ── Shared physical constants (keep in sync with HighwayStopEnvRM) ────────
-    STOP_DIST_OFFSET        = 150.0
-    STOP_SPEED_THRESH       = 0.1
-    STOP_ZONE_START         = 0.0
-    STOP_ZONE_END           = 20.0
-    GOAL                    = 20.0
-    STOP_REGISTRATION_DIST  = 5.0
-
-    # ── Reward scale (mirrors RM file stop_fcfs_rss_3.txt) ────────────────────
-    R_STOP      =  50.0
-    R_GOAL      = 100.0
-    R_COLLISION = -100.0
-    R_PASSED    = -100.0
-
-    def __init__(self, env, delta_t=None, a_max=5.0, a_min=-6.0, a_min_c=-5.0):
-        super().__init__(env)
-
-        self.a_max      = a_max
-        self.a_min      = a_min
-        self.a_min_conf = a_min_c
-        self.gamma      = 0.99
-
-        self.dt      = 1.0 / env.unwrapped.config.get("simulation_frequency", 15)
-        self.kt      = 1.0 / env.unwrapped.config.get("policy_frequency", 5)
-        self.delta_t = self.kt if delta_t is None else delta_t
-
-        # Episode state — hidden from the policy (POMDP)
-        self.has_stopped    = False
-        self.stop_line_x    = None
-        self.prev_dist_s    = self.STOP_DIST_OFFSET
-
-        # Discover actual observation dimension via a silent reset
-        _obs, _ = env.reset()
-        _base_dim = _obs.flatten().shape[0]
-
-        # Observation = kinematic flat + 1 normalised dist scalar
-        self.observation_space = spaces.Box(
-            low  = -np.inf,
-            high =  np.inf,
-            shape = (_base_dim + 1,),
-            dtype = np.float32,
-        )
-
-    # ── Gym interface ─────────────────────────────────────────────────────────
-
-    def reset(self, **kwargs):
-        obs, info = self.env.reset(**kwargs)
-
-        self.has_stopped = False
-        self.prev_dist_s = self.STOP_DIST_OFFSET
-
-        for v in self.env.unwrapped.road.vehicles:
-            if isinstance(v, ControlledVehicle):
-                v.speed = 20.0
-                self.stop_line_x = v.position[0] + self.STOP_DIST_OFFSET
-                self.prev_dist_s = self.STOP_DIST_OFFSET
-                break
-
-        return self._make_obs(obs, self.STOP_DIST_OFFSET), info
-
-    def step(self, action):
-        next_obs, _, env_done, truncated, info = self.env.step(action)
-
-        phys   = self._st4obs()
-        dist_s = phys["dist_to_stop_line"]
-        v_e    = phys["v_e"]
-        d_i    = phys["d_i"]
-        d_rss  = phys["d_rss_safe"]
-
-        reward  = 0.0
-        rm_done = False
-        event   = ''   # mirrors info['event'] convention used by HighwayStopEnvRM
-
-        in_zone   = self.STOP_ZONE_START <= dist_s <= self.STOP_ZONE_END
-        is_halted = v_e < self.STOP_SPEED_THRESH
-
-        # ── 1. Collision ──────────────────────────────────────────────────────
-        if info.get("crashed", False):
-            event   = 'x'
-            reward  = self.R_COLLISION
-            rm_done = True
-
-        # ── 2. Stop-zone event: one-time reward for first full stop ───────────
-        elif in_zone and is_halted and not self.has_stopped:
-            self.has_stopped = True
-            event   = 's'
-            reward  = self.R_STOP
-
-        # ── 3. Approach: RSS shaping or RSS violation penalty ─────────────────
-        elif dist_s > 0:
-            safe_gap = d_i > d_rss
-            if safe_gap:
-                err_AB = d_i - d_rss
-                reward += max(-1.0, 1.0 - err_AB / 2.0)
-                c_prog = 0.5
-                reward += self.gamma * (-c_prog * dist_s) - (-c_prog * self.prev_dist_s)
-            else:
-                violation = d_rss - d_i
-                reward -= 2.0 * violation / 10.0
-
-        # ── 4. Crossed stop line without having stopped → severe penalty ──────
-        elif dist_s < 0 and self.prev_dist_s >= 0 and not self.has_stopped:
-            event   = 'p'
-            reward  = self.R_PASSED
-            rm_done = True
-
-        # ── 5. Past stop line with prior stop: speed reward + goal check ──────
-        elif dist_s < 0 and self.has_stopped:
-            reward += 2.0 * v_e          # proceed reward (cf. RM state-3 formula)
-            if dist_s <= -(self.GOAL - self.STOP_ZONE_START):
-                event   = 'g'
-                reward += self.R_GOAL
-                rm_done = True
-
-        self.prev_dist_s  = dist_s
-        info['event']     = event
-        info['has_stopped'] = self.has_stopped   # for eval metrics only; not in obs
-
-        done = rm_done or env_done
-        return self._make_obs(next_obs, dist_s), reward, done, truncated, info
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    def _make_obs(self, base_obs: np.ndarray, dist_s: float) -> np.ndarray:
-        """Concatenate flat kinematics with normalised dist-to-stop-line."""
-        dist_feat = np.array([dist_s / self.STOP_DIST_OFFSET], dtype=np.float32)
-        return np.concatenate([base_obs.flatten(), dist_feat])
-
-    def _st4obs(self) -> dict:
-        """Extract continuous physical state from the live simulator.
-
-        Vehicle state is read directly from road.vehicles; no observation
-        array is needed because the simulator always holds the ground-truth
-        positions and speeds.
-        """
-        ego_vehicle = None
-        d_e2f       = 150.0
-        v_s         = 0.0
-
-        for v in self.env.unwrapped.road.vehicles:
-            if isinstance(v, ControlledVehicle):
-                ego_vehicle = v
-                break
-
-        dist_to_stop_line = (
-            self.stop_line_x - ego_vehicle.position[0]
-            if ego_vehicle is not None and self.stop_line_x is not None
-            else 0.0
-        )
-
-        if ego_vehicle is not None:
-            ego_x    = ego_vehicle.position[0]
-            ego_lane = ego_vehicle.lane_index[2]
-            for v in self.env.unwrapped.road.vehicles:
-                if v is ego_vehicle:
-                    continue
-                if v.lane_index[2] == ego_lane:
-                    d = v.position[0] - ego_x
-                    if 0 < d < d_e2f:
-                        d_e2f = d
-                        v_s   = v.speed
-
-        approaching = dist_to_stop_line >= self.STOP_REGISTRATION_DIST
-        if approaching:
-            d_i = d_e2f if d_e2f < dist_to_stop_line else dist_to_stop_line
-            v_i = v_s   if d_e2f < dist_to_stop_line else 0.0
-        else:
-            d_i = dist_to_stop_line if dist_to_stop_line >= 0 else d_e2f
-            v_i = 0.0               if dist_to_stop_line >= 0 else v_s
-
-        v_e    = ego_vehicle.speed if ego_vehicle else 0.0
-        d_rss  = (
-            v_e * self.delta_t
-            + 0.5 * self.a_max * self.delta_t ** 2
-            + (v_e + self.a_max * self.delta_t) ** 2 / (2 * abs(self.a_min_conf))
-            - v_i ** 2 / (2 * abs(self.a_min))
-        )
-        return {
-            "v_e":              v_e,
-            "dist_to_stop_line": dist_to_stop_line,
-            "d_ego_to_front":   d_e2f,
-            "v_front":          v_s,
-            "d_i":              d_i,
-            "v_i":              v_i,
-            "d_rss_safe":       d_rss,
-        }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # ── Mode selector ─────────────────────────────────────────────────────────
-    # True  → LSTM-PPO baseline  (HighwayStopEnvLSTM + RecurrentPPO)
-    # False → RM-PPO             (HighwayStopEnvRM   + standard PPO)
-    USE_LSTM  = True
+    # Basic config for training IntersectionEnv with Four-Way Stop
+    isPPO = True
     store_gif = False
-    pre_train = True
-    learn_itrs = 2048 * 60   # 100 k timesteps
+    pre_train = True  # MUST retrain from scratch after changing reward machine structure
+    learn_itrs = 2048*60  # 100k timesteps for PPO (needs more data than DQN)
 
-    logging.basicConfig(
-        level=logging.CRITICAL if pre_train else logging.INFO,
-        filename=None if pre_train else "log_hwy_stopandgo_lstm.txt",
-        filemode="w",
-        format="%(asctime)s %(message)s",
-    )
+    # Configure logging - only write to file if NOT pre_training
+    # IMPORTANT: Must configure BEFORE creating the environment wrapper
+    # Note: Episode-level filtering happens in the testing loop
+    if not pre_train:
+        logging.basicConfig(
+            filename="log_hwy_stopandgo_rm_rss.txt",
+            filemode="w",
+            level=logging.INFO,
+            format="%(asctime)s %(message)s"
+        )
+    else:
+        # During pre-training, disable logging output
+        logging.basicConfig(
+            level=logging.CRITICAL,  # Set to CRITICAL to suppress INFO messages
+            format="%(asctime)s %(message)s"
+        )
+    # logging.basicConfig(
+    #     filename="log_hwy_stopandgo_rm.txt",
+    #     filemode="w",
+    #     level=logging.INFO,
+    #     format="%(asctime)s %(message)s"
+    # )
 
-    # ── Shared environment config ──────────────────────────────────────────────
-    # 5 observed vehicle slots × 4 features = 20-dim kinematics.
-    # HighwayStopEnvLSTM appends 1 normalised-distance scalar → 21-dim
-    # observation for this toy highway-env baseline. Arrival/wait-time vectors
-    # from the FCFS intersection manuscript are intentionally absent here.
-    # HighwayStopEnvRM appends 1 distance + num_rm_states one-hot on top.
-    env_config = {
-        "lanes_count": 1,
-        "vehicles_count": 2,
+    # Create intersection environment
+    config = {
+        "lanes_count": 1,           # Single Lane
+        "vehicles_count": 2,        # 2 IDM vehicle for consistent observation size
         "controlled_vehicles": 1,
-        "initial_speed": 20,
-        # highway-env samples the front-vehicle headway through vehicle density.
-        # density=1 gives roughly 27-33 m in the installed highway-env version,
-        # matching the intended [26.2, 34.9] m toy-case range closely.
-        "vehicles_density": 1.0,
-        "duration": 20,
-        "policy_frequency": 5,       # 5 Hz → T=64 steps ≈ 12.8 s of context
+        "initial_speed": 20,        # CRITICAL: Start ego at 20 m/s (matches target_speeds middle value)
+        "initial_spacing": 1,       # Spacing between vehicles
+        "duration": 20,             # Seconds (TOO LONG FOR 40)
+        "policy_frequency": 5,      # CRITICAL: 10 Hz gives more control actions (was 1 Hz)
         "simulation_frequency": 15,
         "observation": {
             "type": "Kinematics",
-            "vehicles_count": 5,
+            "vehicles_count": 5,    # CRITICAL: Fixed count ensures consistent observation size (pads with zeros if fewer vehicles)
             "features": ["x", "y", "vx", "vy"],
             "normalize": True,
-            "absolute": True,
+            "absolute": True        # Need absolute X to correlate with Stop Line X
         },
         "action": {
             "type": "DiscreteMetaAction",
             "longitudinal": True,
-            "lateral": False,
-            "target_speeds": [0, 15, 30],   # SLOWER / IDLE / FASTER
+            "lateral": False,       # Disable lane changes to focus on speed control
+            "target_speeds": [0, 15, 30]  # CRITICAL: Limit max speed to 20 m/s to prevent overspeeding
+            # SLOWER=0 m/s, IDLE=10 m/s, FASTER=20 m/s
         },
-        "reward_speed_range": [0, 30],
+        "reward_speed_range": [0, 30], # default
         "collision_reward": -1,
     }
-    env = gym.make("highway-v0", render_mode="rgb_array", config=env_config)
-    env.reset()  # apply observation config before wrapping
+    env = gym.make("highway-v0", render_mode='rgb_array', config=config)
+    #print(env.unwrapped.config.get(["action"]))
 
-    # ── Build wrapped environment and model ───────────────────────────────────
-    if USE_LSTM:
-        if not HAS_RECURRENT_PPO:
-            raise ImportError(
-                "sb3_contrib is required for the LSTM-PPO baseline.\n"
-                "Install with:  pip install sb3-contrib"
-            )
+    # CRITICAL: Reset environment to apply observation config BEFORE wrapping
+    # The observation_space is only updated after the first reset
+    obs, info = env.reset()
 
-        wrapped_env = HighwayStopEnvLSTM(env)
-        model_dir   = f"lstm_ppo_hwy_sg_dense_{int(learn_itrs)}"
+    # Load FCFS reward machine
+    rm = RewardMachine("rm_examples/stop_fcfs_rss_3.txt") #stop_hwy_rss
 
-        print("=" * 60)
-        print("LSTM-PPO Baseline  |  HighwayStopEnvLSTM")
-        print(f"Observation space: {wrapped_env.observation_space.shape}")
-        print("=" * 60)
+    # Wrap environment with reward machine
+    hwy_env_rm = HighwayStopEnvRM(env, rm)
 
-        if pre_train:
-            # DenseRecurrentFeatureExtractor gives the intended pre-LSTM feature
-            # module: obs -> Dense(256) -> ReLU -> Dense(128) -> ReLU -> LSTM.
-            # With policy_frequency=5, batch_size=64 means up to 12.8 s of
-            # policy-step context. The "64 frames = 4.27 s" statement only holds
-            # if the recurrent policy is stepped at the 15 Hz simulator rate.
-            policy_kwargs = dict(
-                features_extractor_class = DenseRecurrentFeatureExtractor,
-                features_extractor_kwargs = dict(features_dim=128),
-                net_arch        = [],           # direct heads from h_t
-                activation_fn   = nn.ReLU,
-                lstm_hidden_size = 128,
-                n_lstm_layers   = 1,
-                enable_critic_lstm = True,      # separate LSTM for V(h_t)
-            )
-            model = RecurrentPPO(
-                "MlpLstmPolicy",
-                wrapped_env,
-                policy_kwargs  = policy_kwargs,
-                learning_rate  = 3e-4,
-                n_steps        = 2048,
-                batch_size     = 64,            # max recurrent chunk length
-                n_epochs       = 10,
-                gamma          = 0.99,
-                gae_lambda     = 0.95,
-                clip_range     = 0.2,
-                ent_coef       = 0.01,
-                vf_coef        = 0.5,
-                max_grad_norm  = 0.5,
-                verbose        = 1,
-                device         = "cpu",
-                tensorboard_log = "./lstm_ppo_hwy_tensorboard/",
-            )
-            model.learn(total_timesteps=int(learn_itrs))
+    # DEBUG: Print observation space info
+    print("=" * 60)
+    print("ENVIRONMENT OBSERVATION SPACE DEBUG:")
+    print(f"Base env observation_space: {env.observation_space}")
+    print(f"Wrapped env observation_space: {hwy_env_rm.observation_space}")
+
+    # Check what the base env returns
+    obs_base, _ = env.reset()
+    print(f"Base env actual obs shape: {obs_base.shape}")
+    print(f"Base env actual obs flattened: {obs_base.flatten().shape[0]}")
+
+    obs_test, _ = hwy_env_rm.reset()
+    print(f"Actual wrapped observation shape: {obs_test.shape}")
+    print(f"Expected: {hwy_env_rm.observation_space.shape}")
+    print(f"Match: {obs_test.shape == hwy_env_rm.observation_space.shape}")
+    print("=" * 60)
+
+    #obs, info = custom_reset_with_fixed_vehicles()
+    done = False
+
+    if pre_train:
+        if isPPO:
+            model_dir = "ppo_hwy_sg_rm_rss_" + str(int(learn_itrs))
+            callback = TrainStatsCallback()
+
+            # PPO Hyperparameters optimized for stop-and-go task:
+            # - Higher n_steps for better long-horizon credit assignment
+            # - Larger batch_size for stable policy updates
+            # - Higher gamma for long-term rewards (stop -> go sequence)
+            # - Entropy bonus for initial exploration
+            # - Multiple epochs for better sample efficiency
+            model = PPO("MlpPolicy", hwy_env_rm, verbose=1, device="cpu",
+                        learning_rate=3e-4,        # Stable learning rate for PPO
+                        n_steps=2048,              # Collect more steps before update (more experience per batch)
+                        batch_size=512,            # Larger minibatches for stability (must divide n_steps evenly)
+                        n_epochs=10,               # More gradient updates per batch (default is 10)
+                        gamma=0.99,                # Higher discount for long-horizon task (stop->proceed sequence) (0.995?)
+                        gae_lambda=0.95,           # GAE for advantage estimation
+                        clip_range=0.2,            # Standard PPO clipping (default 0.2)
+                        ent_coef=0.01,             # Entropy bonus for exploration (default 0.0, we boost it)
+                        vf_coef=0.5,               # Value function loss coefficient
+                        max_grad_norm=0.5,         # Gradient clipping for stability
+                        tensorboard_log="./ppo_hwy_tensorboard/")
+            model.learn(total_timesteps=int(learn_itrs), callback=callback)
             model.save(model_dir)
-
-        model = RecurrentPPO.load(model_dir)
-
-    else:
-        # ── RM-PPO (original) ─────────────────────────────────────────────────
-        rm          = RewardMachine("rm_examples/stop_fcfs_rss_3.txt")
-        wrapped_env = HighwayStopEnvRM(env, rm)
-        model_dir   = f"ppo_hwy_sg_rm_rss_{int(learn_itrs)}"
-
-        print("=" * 60)
-        print("RM-PPO  |  HighwayStopEnvRM")
-        print(f"Observation space: {wrapped_env.observation_space.shape}")
-        print("=" * 60)
-
-        if pre_train:
-            model = PPO(
-                "MlpPolicy", wrapped_env,
-                learning_rate  = 3e-4,
-                n_steps        = 2048,
-                batch_size     = 512,
-                n_epochs       = 10,
-                gamma          = 0.99,
-                gae_lambda     = 0.95,
-                clip_range     = 0.2,
-                ent_coef       = 0.01,
-                vf_coef        = 0.5,
-                max_grad_norm  = 0.5,
-                verbose        = 1,
-                device         = "cpu",
-                tensorboard_log = "./ppo_hwy_tensorboard/",
-            )
-            model.learn(total_timesteps=int(learn_itrs),
-                        callback=TrainStatsCallback())
-            model.save(model_dir)
-
-        model = PPO.load(model_dir)
-
-    # ── Evaluation (shared logic for both modes) ──────────────────────────────
-    n_total     = 5 if store_gif else 100
-    n_collision = n_goal = n_passed = n_stopped = 0
-    sum_dist_s  = 0.0
-    frames      = [] if store_gif else None
-
-    pbar = trange(n_total, desc="Eval")
-    for episode in range(n_total):
-        episode_collision = episode_stopped = episode_goal = episode_passed = False
-        stop_counter      = False
-        curr_d_stop       = 0.0
-
-        if USE_LSTM:
-            wrapped_env.enable_episode_logging = False  # type: ignore[attr-defined]
         else:
-            wrapped_env.enable_episode_logging = False
+            model_dir = "dqn_hwy_sg_rm_rss_" + str(int(learn_itrs))
+            model = DQN('MlpPolicy', hwy_env_rm,
+                       policy_kwargs=dict(net_arch=[256, 256]),
+                       learning_rate=5e-4,
+                       buffer_size=30000,  # Increased buffer
+                       learning_starts=1000,  # More initial exploration
+                       batch_size=64,  # Larger batch for stability
+                       gamma=0.99,  # Higher discount for long-term rewards
+                       train_freq=1,
+                       gradient_steps=1,
+                       target_update_interval=100,
+                       exploration_fraction=0.5,  # Explore for 50% of training
+                       exploration_initial_eps=1.0,  # Start with full exploration
+                       exploration_final_eps=0.05,  # End with 5% exploration
+                       verbose=1,
+                       device="cpu",
+                       tensorboard_log="highway_dqn/")
+            callback = TrainStatsCallback()
+            model.learn(total_timesteps=int(learn_itrs), callback=callback)
+            model.save(model_dir)
+    else:
+        if isPPO:
+            model_dir = "ppo_hwy_sg_rm_rss_" + str(int(learn_itrs))
+        else:
+            model_dir = "dqn_hwy_sg_rm_rss_" + str(int(learn_itrs))
 
-        obs, _     = wrapped_env.reset()
-        done       = truncated = False
-        lstm_state = None                         # LSTM carries h_t, c_t across steps
-        ep_start   = np.ones((1,), dtype=bool)   # signals LSTM to reset at episode start
+    # ----- Testing -----
+    if isPPO:
+        model = PPO.load(model_dir)
+    else:
+        model = DQN.load(model_dir)
+
+    if store_gif:
+        frames = []
+
+    if store_gif:
+        n_total = 5
+    else:
+        n_total = 100
+
+    n_collision = 0
+    n_goal = 0
+    n_passed = 0
+    n_stopped = 0
+    sum_dist_s = 0.0
+
+    # Testing trained IntersectionEnv with RM
+    pbar = trange(n_total, desc='Episodes')
+    #env.unwrapped.config["vehicles_count"] = 1
+    #test_hwy_env_rm = HighwayStopEnvRM(env, rm)
+    for episode in range(n_total):
+        done = truncated = False
+
+        # Episode-level tracking flags
+        episode_collision = False
+        episode_passed_without_stop = False
+        episode_correct_stop = False
+        episode_stopped = False  # Track if agent properly stopped before line
+        episode_goal = False
+        episode_passed = False
+        #count_once = False
+        stop_counter = False
+
+        # Temporarily disable logging - we'll enable it after checking if episode is a failure
+        hwy_env_rm.enable_episode_logging = False
+
+        # IMPORTANT: Reset using the wrapped env, not the base env
+        obs, info = hwy_env_rm.reset() #env.reset() #custom_reset_with_fixed_vehicles()
+
+        t_i = 0
+        episode_reward = 0.0
+        curr_d_stop = 0.0
 
         while not (done or truncated):
-            if USE_LSTM:
-                action, lstm_state = model.predict(
-                    obs, state=lstm_state, episode_start=ep_start, deterministic=True)
-            else:
-                action, _ = model.predict(obs, deterministic=True)
 
-            obs, reward, done, truncated, info = wrapped_env.step(action)
-            ep_start = np.array([done or truncated])
+            action, _ = model.predict(obs, deterministic=True)
 
-            event = info.get("event", "")
+            obs, reward, done, truncated, info = hwy_env_rm.step(action)
+            #obs, reward, done, truncated, info = test_hwy_env_rm.step(action)
 
-            if event == "x" or info.get("crashed", False):
+            episode_reward += reward
+
+            # Get current physical state for event detection.
+            # Use info['event'] set by step() — do NOT call L() again here,
+            # as a second call would corrupt ego_stopped_time and miss 's'.
+            phys_state = hwy_env_rm.st4obs(obs)
+            current_event = info.get('event', '')
+
+            # Track collision events
+            if current_event == 'x' or info.get('crashed', False):
                 episode_collision = True
-            if event == "s" and not episode_stopped:
+
+            # Track if agent stopped properly in the stop zone before the line
+            if current_event == 's' and not episode_stopped: #stop_counter:
                 episode_stopped = True
-                n_stopped += 1
-            if event == "p":
+                n_stopped = n_stopped + 1
+                # curr_d_stop = phys_state['dist_to_stop_line'] #obs[-(hwy_env_rm.num_rm_states + 1)]*hwy_env_rm.STOP_DIST_OFFSET
+                #stop_counter = True
+
+            if abs(phys_state['v_e']) < 0.1 and (not stop_counter):
+                curr_d_stop = phys_state['dist_to_stop_line']
+                stop_counter = True
+
+            # Track if agent passed the stop line without stopping
+            # This happens when 'p' event occurs WITHOUT having stopped first
+            if current_event == 'p': #and not episode_stopped:
+                episode_passed_without_stop = True
                 episode_passed = True
 
-            # Record distance at first full stop (from physical state)
-            if USE_LSTM:
-                phys = wrapped_env._st4obs()
-            else:
-                phys = wrapped_env.st4obs(obs)
-            if abs(phys["v_e"]) < 0.1 and not stop_counter:
-                curr_d_stop  = phys["dist_to_stop_line"]
-                stop_counter = True
-            goal_dist = getattr(wrapped_env, "GOAL", 50.0) - getattr(wrapped_env, "STOP_ZONE_START", 0.0)
-            if phys["dist_to_stop_line"] <= -goal_dist:
+
+            # Track if agent reached the goal
+            if phys_state['dist_to_stop_line'] <= -50: #current_event == 'g':
                 episode_goal = True
 
-            if frames is not None:
+            if store_gif:
                 frame = env.render()
-                frame = draw_stop_line(
-                    frame, env, wrapped_env.stop_line_x,
-                    wrapped_env.env.unwrapped.vehicle)
+                # Draw the stop sign line on the frame
+                frame = draw_stop_line(frame, env, hwy_env_rm.stop_line_x, hwy_env_rm.env.unwrapped.vehicle)
                 frames.append(frame)
 
+            t_i += 1
+
         if curr_d_stop is not None:
-            sum_dist_s += curr_d_stop
+            sum_dist_s = sum_dist_s + curr_d_stop
+        # Determine if this episode is a failure that should be logged
+        # Failure conditions: collision, passed without stopping, or didn't complete goal
+        is_failure = (episode_collision or
+                     (episode_passed_without_stop and not episode_correct_stop) or
+                     not (episode_goal and episode_stopped and not episode_collision))
+        # is_failure = True
+
+        # If this is a failure episode and we're not pre-training, write buffered logs
+        if is_failure and not pre_train and hasattr(hwy_env_rm, 'log_buffer'):
+            logging.info(f"=== FAILURE EPISODE {episode+1}/{n_total} ===")
+            for log_msg in hwy_env_rm.log_buffer:
+                logging.info(log_msg)
+            logging.info(f"=== END FAILURE EPISODE {episode+1} ===\n")
+
+        # Update episode counters after episode completes
         if episode_collision:
             n_collision += 1
-        if episode_passed and not episode_stopped:
+
+        if episode_passed and (not episode_stopped): #episode_passed_without_stop and (not episode_correct_stop):
             n_passed += 1
+
+        # Only count as goal completion if agent stopped AND reached goal without collision
         if episode_goal and episode_stopped and not episode_collision:
             n_goal += 1
 
         #avg_dist_s = sum_dist_s / n_stopped if n_stopped > 0 else float('nan') # Strict avg_ds
         avg_dist_s = sum_dist_s / (episode+1-n_passed) if n_stopped > 0 else float('nan') # Relaxed avg_ds
         pbar.set_postfix({
-            "comp": f"{100*n_goal/(episode+1):.1f}%",
-            "safe": f"{100*(1-n_collision/(episode+1)):.1f}%",
-            # "stop": f"{100*n_stopped/(episode+1):.1f}%",
-            "stop": f"{100*(1-n_passed/(episode+1)):.1f}%",
-            # "d_s":  f"{sum_dist_s/max(episode+1-n_passed,1):.2f}m",
-            "d_s": f"{(avg_dist_s):.2f}m"
+            'comp': f"{(100*n_goal/(episode+1)):.1f}%",
+            'safe': f"{(100*(1-n_collision/(episode+1))):.1f}%",
+            'psed': f"{(100*n_passed/(episode+1)):.1f}%",
+            # 'd_s': f"{(sum_dist_s/(episode+1-n_passed)):.2f}m"
+            'd_s': f"{(avg_dist_s):.2f}m"
         })
         pbar.update(1)
 
     pbar.close()
-    label = "LSTM-PPO BASELINE" if USE_LSTM else "RM-PPO"
-    print(f"\n{'='*60}")
-    print(f"RESULTS — {label}")
-    print(f"{'='*60}")
-    print(f"M_goal  (completion):    {100*n_goal/n_total:.2f}%")
-    print(f"M_safe  (no collision):  {100*(1-n_collision/n_total):.2f}%")
-    print(f"M_stop  (stopped first): {100*n_stopped/n_total:.2f}%")
+
+    print("\n" + "=" * 60)
+    print("RESULTS WITH FCFS REWARD MACHINE:")
+    print(f"Completion (M_goal):     {(100*n_goal/n_total):.2f}%")
+    print(f"Safety (M_safe):         {(100*(1 - n_collision/n_total)):.2f}%")
+    #print(f"Stop Convention (M_stop): {(100*(1 - n_passed/n_total)):.2f}%")
+    print(f"Stop Convention (M_stop): {(100*(n_stopped/n_total)):.2f}%")
+    #print(f"Avg. d_stop: {(sum_dist_s/(n_total-n_passed)):.2f}m")
     # print(f"Avg. d_stop: {(sum_dist_s/n_stopped if n_stopped > 0 else float('nan')):.2f}m") # Strict avg_ds
-    print(f"Avg. d_stop:             {(sum_dist_s/(n_total-n_passed) if n_stopped > 0 else float('nan')):.2f} m") # Relaxed avg_ds
-    print(f"{'-'*60}")
-    print(f"Collisions:              {n_collision}/{n_total}")
-    print(f"Passed w/o stop:         {n_passed}/{n_total}")
-    print(f"Goal completions:        {n_goal}/{n_total}")
-    print(f"{'='*60}")
+    print(f"Avg. d_stop: {(sum_dist_s/(n_total-n_passed) if n_stopped > 0 else float('nan')):.2f}m") # Relaxed avg_ds
+    print("-" * 60)
+    print(f"Episodes with collision:  {n_collision}/{n_total}")
+    print(f"Episodes passed w/o stop: {n_passed}/{n_total}")
+    print(f"Episodes reached goal:    {n_goal}/{n_total}")
+    print("=" * 60)
 
     env.close()
 
-    if frames:
-        tag = "lstm" if USE_LSTM else "rm"
-        gif_path = f"stopandgo_{tag}.gif"
-        imageio.mimsave(gif_path, frames, fps=10)
-        print(f"GIF saved → {gif_path}")
+    if store_gif and len(frames) > 0:
+        imageio.mimsave('stopandgo_rm_rss.gif', frames, fps=10)
+        print("GIF saved as 'stopandgo_rm_rss.gif'")
+    elif store_gif:
+        print("Warning: No frames captured, GIF not saved")

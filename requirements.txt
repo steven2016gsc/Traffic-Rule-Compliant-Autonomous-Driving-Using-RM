@@ -64,3 +64,4 @@ gymnasium
 
 # Additional MetaDrive optional dependencies
 sumolib >= 1.21.0
+traci
