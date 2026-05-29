@@ -6,7 +6,7 @@ Code repository for the manuscript:
 
 ---
 
-## Repository Structure
+## Structure
 
 ```
 ├── reward_machine/                     # Reward Machine implementation (from https://github.com/RodrigoToroIcarte/reward_machines.git)
@@ -51,22 +51,6 @@ pip install torch
 pip install -r requirements.txt
 ```
 
-The `requirements.txt` covers all required packages, including:
-
-| Package | Purpose |
-|---|---|
-| `gymnasium` | RL environment interface |
-| `highway-env` | highway-v0 stop-sign environment |
-| `stable_baselines3[extra]` | PPO / DQN implementations |
-| `sb3-contrib` | RecurrentPPO (LSTM-PPO baseline) |
-| `numpy`, `matplotlib` | Numerics and plotting |
-| `opencv-python` | Frame rendering overlays |
-| `imageio` | GIF export |
-| `tqdm` | Progress bars |
-| `tensorboard` | Training curves |
-| `scenic` | Scenario generation (SUMO experiments) |
-| `sumolib`, `traci` | SUMO Python bindings |
-
 ### 4. SUMO (required for FCFS intersection experiments)
 
 SUMO is **not** pip-installable and must be built or installed separately.
@@ -87,18 +71,17 @@ The SUMO scripts detect `$SUMO_HOME` automatically and add the `tools/` director
 
 ## Usage
 
-### Highway-Env: Stop-and-Go
+### Toy case: Stopping at a stop sign
 
 #### `train_hwyenv_stopandgo_rm.py` — RM-PPO (proposed method)
 
-Trains a PPO agent on the highway-env single-lane stop-sign task using a Reward Machine product-MDP wrapper (`HighwayStopEnvRM`). All hyperparameters are configured via constants at the top of the `if __name__ == "__main__"` block:
+Trains a PPO agent on the toy case using a Reward Machine product-MDP wrapper (`HighwayStopEnvRM`). All hyperparameters are configured via constants at the top of the `if __name__ == "__main__"` block:
 
 | Variable | Default | Description |
 |---|---|---|
 | `pre_train` | `True` | `True` = run training; `False` = load saved model and evaluate |
 | `isPPO` | `True` | `True` = use PPO; `False` = use DQN |
 | `learn_itrs` | `2048 * 60` | Total training timesteps (≈ 122 880) |
-| `store_gif` | `False` | Save a GIF of evaluation episodes |
 
 ```bash
 python train_hwyenv_stopandgo_rm.py
@@ -117,7 +100,6 @@ Trains either a RecurrentPPO (LSTM) baseline (`HighwayStopEnvLSTM`) or the RM-PP
 | `USE_LSTM` | `True` | `True` = LSTM-PPO baseline; `False` = RM-PPO |
 | `pre_train` | `True` | `True` = run training; `False` = load and evaluate |
 | `learn_itrs` | `2048 * 60` | Total training timesteps |
-| `store_gif` | `False` | Save evaluation GIF |
 
 ```bash
 python train_hwyenv_stopandgo_lstmppo.py
@@ -127,13 +109,13 @@ Outputs: `lstm_ppo_hwy_sg_dense_<steps>.zip` (LSTM) or `ppo_hwy_sg_rm_rss_<steps
 
 ---
 
-### SUMO: All-Way Stop FCFS Intersection
+### SUMO: Unsignalized Intersection
 
 > **Note:** `$SUMO_HOME` must be set and SUMO must be installed before running these scripts.
 
 #### `train_sumo_intersection_fcfs_rm.py` — RM-PPO (proposed method)
 
-Trains or evaluates a PPO/DQN agent on the SUMO all-way stop intersection with a full FCFS Reward Machine wrapper (`AllWayStopEnvRM`).
+Trains or evaluates a PPO/DQN agent on the SUMO unsignalized intersection with a full FCFS Reward Machine wrapper (`AllWayStopEnvRM`).
 
 ```
 python train_sumo_intersection_fcfs_rm.py [OPTIONS]
@@ -146,11 +128,8 @@ python train_sumo_intersection_fcfs_rm.py [OPTIONS]
 | `--timesteps` | int | `50000` | Total training timesteps |
 | `--model` | str | `None` | Path to a saved model for evaluation |
 | `--episodes` | int | `10` | Number of evaluation episodes |
-| `--sumo` | flag | — | Use SUMO/TraCI backend (recommended) |
-| `--scenic` | flag | — | Use Scenic with Newtonian simulator |
+| `--sumo` | flag | — | Use SUMO/TraCI backend (needed) |
 | `--render` | flag | — | Render during evaluation |
-| `--save-gif` | flag | — | Save evaluation episodes as GIF files |
-| `--gif-duration` | float | `12.0` | Duration (s) per GIF |
 | `--seed` | int | `0` | Random seed |
 | `--log-fail-only` | flag | — | Only log failed episodes (mutually exclusive with `--no-log`) |
 | `--no-log` | flag | — | Suppress all evaluation logging (mutually exclusive with `--log-fail-only`) |
@@ -173,7 +152,7 @@ python train_sumo_intersection_fcfs_rm.py --mode eval --model ppo_allway_stop_12
 
 #### `train_sumo_intersection_fcfs_lstmppo.py` — LSTM-PPO baseline
 
-Trains or evaluates the LSTM-PPO baseline (`AllWayStopEnvLSTM` + `RecurrentPPO`) on the SUMO FCFS intersection.
+Trains or evaluates the LSTM-PPO baseline (`AllWayStopEnvLSTM` + `RecurrentPPO`) on the SUMO unsignalized intersection.
 
 ```
 python train_sumo_intersection_fcfs_lstmppo.py [OPTIONS]
@@ -185,7 +164,7 @@ python train_sumo_intersection_fcfs_lstmppo.py [OPTIONS]
 | `--timesteps` | int | `122880` | Training timesteps |
 | `--episodes` | int | `100` | Number of evaluation episodes |
 | `--model` | str | `None` | Model path for eval (auto-derived from `--timesteps` if omitted) |
-| `--sumo` | flag | `True` | Use SUMO/TraCI backend |
+| `--sumo` | flag | `True` | Use SUMO/TraCI backend (needed) |
 | `--render` | flag | `False` | Render with SUMO-GUI during evaluation |
 | `--seed` | int | `None` | Random seed (random each run if omitted) |
 
@@ -224,9 +203,9 @@ All four `eval_multiseed_*.py` scripts share the same seed-selection and trainin
 
 ---
 
-#### `eval_multiseed_s2g.py` — highway-env RM-PPO, multi-seed
+#### `eval_multiseed_s2g.py` — Toy case with RM-PPO, multi-seed
 
-Multi-seed training + evaluation for the highway-env stop-and-go task using RM-PPO (`HighwayStopEnvRM`). Default: 10 seeds × 122 880 steps, evaluated every 4 096 steps over 100 episodes. Metrics: M_goal, M_safe, M_stop, avg_d_stop.
+Multi-seed training + evaluation for the toy case: stopping at a stop sign, using RM-PPO (`HighwayStopEnvRM`). Default: 10 seeds * 122 880 steps, evaluated every 4 096 steps over 100 episodes. Metrics: M_goal, M_safe, M_stop, avg_d_stop.
 
 ```bash
 # Run all 10 seeds
@@ -244,7 +223,7 @@ python eval_multiseed_s2g.py --plot-only
 
 ---
 
-#### `eval_multiseed_s2g_lstmppo.py` — highway-env LSTM-PPO, multi-seed
+#### `eval_multiseed_s2g_lstmppo.py` — Toy case with LSTM-PPO, multi-seed
 
 Identical protocol to `eval_multiseed_s2g.py`, but trains the LSTM-PPO baseline (`HighwayStopEnvLSTM` + `RecurrentPPO`). The recurrent hidden state `(h_t, c_t)` is preserved across every evaluation step.
 
@@ -258,23 +237,23 @@ python eval_multiseed_s2g_lstmppo.py --plot-only
 
 ---
 
-#### `eval_multiseed_fcfs.py` — SUMO FCFS RM-PPO, multi-seed
+#### `eval_multiseed_fcfs.py` — SUMO unsignalized intersection RM-PPO, multi-seed
 
-Multi-seed training + evaluation for the SUMO all-way stop FCFS intersection using RM-PPO (`AllWayStopEnvRM`). Each seed creates two separate SUMO/TraCI processes (`'train'` and `'eval'` labels) that coexist in the same Python process without conflict. Default: 10 seeds × 122 880 steps. Metrics: M_goal, M_safe, M_stop, M_yield, avg_d_stop.
+Multi-seed training + evaluation for the SUMO unsignalized intersection using RM-PPO (`AllWayStopEnvRM`). Each seed creates two separate SUMO/TraCI processes (`'train'` and `'eval'` labels) that coexist in the same Python process without conflict. Default: 10 seeds * 122 880 steps. Metrics: M_goal, M_safe, M_stop, M_yield, avg_d_stop.
 
 > **Requires `$SUMO_HOME` to be set.**
 
 ```bash
 python eval_multiseed_fcfs.py
 
-python eval_multiseed_fcfs.py --seed 0 --steps 92160
+python eval_multiseed_fcfs.py --seed 0 --steps 122880
 
 python eval_multiseed_fcfs.py --plot-only-with-txt
 ```
 
 ---
 
-#### `eval_multiseed_fcfs_lstmppo.py` — SUMO FCFS LSTM-PPO, multi-seed
+#### `eval_multiseed_fcfs_lstmppo.py` — SUMO unsignalized intersection LSTM-PPO, multi-seed
 
 Identical to `eval_multiseed_fcfs.py`, but uses the LSTM-PPO baseline (`AllWayStopEnvLSTM` + `RecurrentPPO`). FCFS priority is still tracked internally via `env.fcfs_queue` (hidden from the policy), so M_yield is evaluated identically.
 
@@ -296,15 +275,15 @@ python eval_multiseed_fcfs_lstmppo.py --plot-only
 |---|---|
 | **M_goal** | Fraction of episodes where ego cleared the intersection after a valid stop |
 | **M_safe** | Fraction of collision-free episodes |
-| **M_stop** | Fraction of episodes where ego fully stopped at the stop line |
+| **M_stop** | Fraction of episodes where ego fully stopped at the stop sign |
 | **M_yield** | (SUMO only) Fraction of episodes where ego correctly respected FCFS priority |
-| **avg_d_stop** | Mean distance-to-stop-line at the moment of first full stop (m) |
+| **avg_d_stop** | Mean distance-to-stop-line at the moment of registered full stop at the intersection (m) |
 
 ---
 
-## Citation
+<!-- ## Citation -->
 
-If you use this code, please cite:
+<!-- If you use this code, please cite:
 
 ```bibtex
 @article{guo2025traffic,
@@ -312,4 +291,4 @@ If you use this code, please cite:
   author  = {Guo, Steven and ...},
   year    = {2025}
 }
-```
+``` -->
