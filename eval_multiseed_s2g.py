@@ -56,7 +56,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 # Import the wrapper and RM from the training module.
 # The module-level `if __name__ == "__main__":` block is guarded, so importing
 # is safe and does not trigger training or logging setup.
-from train_hwyenv_stopandgo_rm_single_sas_rss_28 import HighwayStopEnvRM
+from train_hwyenv_stopandgo_rm import HighwayStopEnvRM
 from reward_machine.reward_machine import RewardMachine
 
 # ── Suppress all loggers so eval I/O stays clean ──────────────────────────────

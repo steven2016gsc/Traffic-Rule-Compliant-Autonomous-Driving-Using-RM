@@ -59,7 +59,7 @@ except ImportError:
     HAS_RECURRENT_PPO = False
     raise ImportError("sb3_contrib required. Install with: pip install sb3-contrib")
 
-from train_hwyenv_stopandgo_lstmppo_single import (
+from train_hwyenv_stopandgo_lstmppo import (
     HighwayStopEnvLSTM,
     DenseRecurrentFeatureExtractor,
 )
