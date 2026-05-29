@@ -536,7 +536,8 @@ class HighwayStopEnvRM(gym.Wrapper):
         
         # Stop Zone Logic
         # Stop Zone: 0 to 10 meters before line
-        in_stop_zone = self.STOP_ZONE_START <= dist_s <= self.STOP_ZONE_END
+        #in_stop_zone = self.STOP_ZONE_START <= dist_s <= self.STOP_ZONE_END
+        in_stop_zone = 0 <= dist_s <= self.STOP_REGISTRATION_DISTANCE
         is_stopped = v_e < self.STOP_SPEED_THRESH
 
         # --- Prev. to 12/28 (PROBLEMATIC) ---
@@ -720,7 +721,8 @@ class HighwayStopEnvLSTM(gym.Wrapper):
         rm_done = False
         event   = ''   # mirrors info['event'] convention used by HighwayStopEnvRM
 
-        in_zone   = self.STOP_ZONE_START <= dist_s <= self.STOP_ZONE_END
+        # in_zone   = self.STOP_ZONE_START <= dist_s <= self.STOP_ZONE_END
+        in_zone = 0 <= dist_s <= self.STOP_REGISTRATION_DIST
         is_halted = v_e < self.STOP_SPEED_THRESH
 
         # ── 1. Collision ──────────────────────────────────────────────────────
