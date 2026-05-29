@@ -194,6 +194,7 @@ def _evaluate_inline(
         # Distance-at-first-stop tracking
         stop_counter  = False   # latch: first full stop already recorded
         curr_d_stop = None
+        cor_d_stop = None
 
         while not (done or trunc):
             # Thread lstm_state and ep_start so h_t persists within the episode
@@ -214,6 +215,7 @@ def _evaluate_inline(
             if not ep_stopped and event == 's':
                 ep_stopped  = True
                 #curr_d_stop = state['dist_to_stop_line'] # Stopping precision for correct stops at the stop sign
+                cor_d_stop = state['dist_to_stop_line']
 
             if abs(state['v_e']) < 0.1 and not stop_counter:
                 curr_d_stop = state['dist_to_stop_line'] # Stopping precision for ordinary stops
@@ -228,8 +230,9 @@ def _evaluate_inline(
             n_col += 1
         if ep_stopped:
             n_stopped  += 1
-        if curr_d_stop is not None:
-            sum_d_stop += curr_d_stop
+            sum_d_stop += cor_d_stop
+        # if curr_d_stop is not None:
+        #     sum_d_stop += curr_d_stop
         if ep_passed and not ep_stopped:
             n_pass += 1
         if ep_goal and ep_stopped and not ep_col:
@@ -239,8 +242,8 @@ def _evaluate_inline(
     M_goal     = 100.0 * n_goal    / N
     M_safe     = 100.0 * (1 - n_col  / N)
     M_stop     = 100.0 * n_stopped / N
-    # avg_d_stop = sum_d_stop / n_stopped if n_stopped > 0 else float('nan') # Strict avg_ds
-    avg_d_stop = sum_d_stop / (N-n_pass) if n_stopped > 0 else float('nan') # Relaxed avg_ds
+    avg_d_stop = sum_d_stop / n_stopped if n_stopped > 0 else float('nan') # Strict avg_ds
+    # avg_d_stop = sum_d_stop / (N-n_pass) if n_stopped > 0 else float('nan') # Relaxed avg_ds
     return M_goal, M_safe, M_stop, avg_d_stop
 
 

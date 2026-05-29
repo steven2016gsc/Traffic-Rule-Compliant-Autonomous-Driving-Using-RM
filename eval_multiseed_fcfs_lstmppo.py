@@ -388,7 +388,7 @@ def plot_results(
         ax1.set_xlim(0, x_max_k * 1.05)
     ax1.set_xlabel(r'Training Timesteps ($\times 10^3$)')
     ax1.set_ylabel(r'(\%)')
-    ax1.legend(loc='lower right', bbox_to_anchor=(1.28, 0.0), framealpha=0.9, fontsize=10)
+    ax1.legend(loc='lower right', bbox_to_anchor=(1.45, 0.0), framealpha=0.9, fontsize=10)
     ax1.set_title(r'(a) Task Completion Metrics')
 
     data_d  = all_results[:, :, 4]
@@ -416,7 +416,8 @@ def plot_results(
     ax2.set_title(r'(b) Stopping Precision')
 
     upper_d = np.nanmax(mean_d + ci_d) if not np.all(np.isnan(mean_d)) else 10.0
-    ax2.set_ylim(bottom=ax1.get_ylim()[0], top=upper_d * 1.1)
+    # 5% autoscale margin: -0.05*data_range
+    ax2.set_ylim(bottom=-0.05*upper_d*1.1, top=upper_d * 1.1) #ax1.get_ylim()[0]
 
     plt.tight_layout()
     fig.savefig(output_file, dpi=300, bbox_inches='tight', pad_inches=0.02)

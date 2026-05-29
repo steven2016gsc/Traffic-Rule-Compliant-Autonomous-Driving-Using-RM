@@ -987,7 +987,8 @@ if __name__ == "__main__":
     for episode in range(n_total):
         episode_collision = episode_stopped = episode_goal = episode_passed = False
         stop_counter      = False
-        curr_d_stop       = 0.0
+        curr_d_stop       = None
+        cor_d_stop = None
 
         if USE_LSTM:
             wrapped_env.enable_episode_logging = False  # type: ignore[attr-defined]
@@ -1015,7 +1016,9 @@ if __name__ == "__main__":
                 episode_collision = True
             if event == "s" and not episode_stopped:
                 episode_stopped = True
-                n_stopped += 1
+                # n_stopped += 1
+                # curr_d_stop = phys['dist_to_stop_line'] # Stopping precision for correct stops at the stop sign
+                cor_d_stop = phys["dist_to_stop_line"]
             if event == "p":
                 episode_passed = True
 
@@ -1038,22 +1041,23 @@ if __name__ == "__main__":
                     wrapped_env.env.unwrapped.vehicle)
                 frames.append(frame)
 
-        if curr_d_stop is not None:
-            sum_dist_s += curr_d_stop
+        # if curr_d_stop is not None:
+        #     sum_dist_s += curr_d_stop
         if episode_collision:
             n_collision += 1
+        if episode_stopped:           n_stopped  += 1; sum_dist_s += cor_d_stop
         if episode_passed and not episode_stopped:
             n_passed += 1
         if episode_goal and episode_stopped and not episode_collision:
             n_goal += 1
 
-        #avg_dist_s = sum_dist_s / n_stopped if n_stopped > 0 else float('nan') # Strict avg_ds
-        avg_dist_s = sum_dist_s / (episode+1-n_passed) if n_stopped > 0 else float('nan') # Relaxed avg_ds
+        avg_dist_s = sum_dist_s / n_stopped if n_stopped > 0 else float('nan') # Strict avg_ds
+        # avg_dist_s = sum_dist_s / (episode+1-n_passed) if n_stopped > 0 else float('nan') # Relaxed avg_ds
         pbar.set_postfix({
             "comp": f"{100*n_goal/(episode+1):.1f}%",
             "safe": f"{100*(1-n_collision/(episode+1)):.1f}%",
-            # "stop": f"{100*n_stopped/(episode+1):.1f}%",
-            "stop": f"{100*(1-n_passed/(episode+1)):.1f}%",
+            "stop": f"{100*n_stopped/(episode+1):.1f}%",
+            # "stop": f"{100*(1-n_passed/(episode+1)):.1f}%",
             # "d_s":  f"{sum_dist_s/max(episode+1-n_passed,1):.2f}m",
             "d_s": f"{(avg_dist_s):.2f}m"
         })
@@ -1067,8 +1071,8 @@ if __name__ == "__main__":
     print(f"M_goal  (completion):    {100*n_goal/n_total:.2f}%")
     print(f"M_safe  (no collision):  {100*(1-n_collision/n_total):.2f}%")
     print(f"M_stop  (stopped first): {100*n_stopped/n_total:.2f}%")
-    # print(f"Avg. d_stop: {(sum_dist_s/n_stopped if n_stopped > 0 else float('nan')):.2f}m") # Strict avg_ds
-    print(f"Avg. d_stop:             {(sum_dist_s/(n_total-n_passed) if n_stopped > 0 else float('nan')):.2f} m") # Relaxed avg_ds
+    print(f"Avg. d_stop: {(sum_dist_s/n_stopped if n_stopped > 0 else float('nan')):.2f}m") # Strict avg_ds
+    # print(f"Avg. d_stop:             {(sum_dist_s/(n_total-n_passed) if n_stopped > 0 else float('nan')):.2f} m") # Relaxed avg_ds
     print(f"{'-'*60}")
     print(f"Collisions:              {n_collision}/{n_total}")
     print(f"Passed w/o stop:         {n_passed}/{n_total}")

@@ -754,7 +754,8 @@ if __name__ == "__main__":
 
         t_i = 0
         episode_reward = 0.0
-        curr_d_stop = 0.0
+        curr_d_stop = None
+        cor_d_stop = None
 
         while not (done or truncated):
 
@@ -776,11 +777,11 @@ if __name__ == "__main__":
                 episode_collision = True
 
             # Track if agent stopped properly in the stop zone before the line
-            if current_event == 's' and not episode_stopped: #stop_counter:
+            if current_event == 's' and not episode_stopped:
                 episode_stopped = True
-                n_stopped = n_stopped + 1
+                # n_stopped = n_stopped + 1
                 # curr_d_stop = phys_state['dist_to_stop_line'] #obs[-(hwy_env_rm.num_rm_states + 1)]*hwy_env_rm.STOP_DIST_OFFSET
-                #stop_counter = True
+                cor_d_stop = phys_state["dist_to_stop_line"]
 
             if abs(phys_state['v_e']) < 0.1 and (not stop_counter):
                 curr_d_stop = phys_state['dist_to_stop_line']
@@ -805,8 +806,8 @@ if __name__ == "__main__":
 
             t_i += 1
 
-        if curr_d_stop is not None:
-            sum_dist_s = sum_dist_s + curr_d_stop
+        # if curr_d_stop is not None:
+        #     sum_dist_s = sum_dist_s + curr_d_stop
         # Determine if this episode is a failure that should be logged
         # Failure conditions: collision, passed without stopping, or didn't complete goal
         is_failure = (episode_collision or
@@ -825,6 +826,8 @@ if __name__ == "__main__":
         if episode_collision:
             n_collision += 1
 
+        if episode_stopped:           n_stopped  += 1; sum_dist_s += cor_d_stop
+
         if episode_passed and (not episode_stopped): #episode_passed_without_stop and (not episode_correct_stop):
             n_passed += 1
 
@@ -832,8 +835,8 @@ if __name__ == "__main__":
         if episode_goal and episode_stopped and not episode_collision:
             n_goal += 1
 
-        #avg_dist_s = sum_dist_s / n_stopped if n_stopped > 0 else float('nan') # Strict avg_ds
-        avg_dist_s = sum_dist_s / (episode+1-n_passed) if n_stopped > 0 else float('nan') # Relaxed avg_ds
+        avg_dist_s = sum_dist_s / n_stopped if n_stopped > 0 else float('nan') # Strict avg_ds
+        # avg_dist_s = sum_dist_s / (episode+1-n_passed) if n_stopped > 0 else float('nan') # Relaxed avg_ds
         pbar.set_postfix({
             'comp': f"{(100*n_goal/(episode+1)):.1f}%",
             'safe': f"{(100*(1-n_collision/(episode+1))):.1f}%",
@@ -852,8 +855,8 @@ if __name__ == "__main__":
     #print(f"Stop Convention (M_stop): {(100*(1 - n_passed/n_total)):.2f}%")
     print(f"Stop Convention (M_stop): {(100*(n_stopped/n_total)):.2f}%")
     #print(f"Avg. d_stop: {(sum_dist_s/(n_total-n_passed)):.2f}m")
-    # print(f"Avg. d_stop: {(sum_dist_s/n_stopped if n_stopped > 0 else float('nan')):.2f}m") # Strict avg_ds
-    print(f"Avg. d_stop: {(sum_dist_s/(n_total-n_passed) if n_stopped > 0 else float('nan')):.2f}m") # Relaxed avg_ds
+    print(f"Avg. d_stop: {(sum_dist_s/n_stopped if n_stopped > 0 else float('nan')):.2f}m") # Strict avg_ds
+    # print(f"Avg. d_stop: {(sum_dist_s/(n_total-n_passed) if n_stopped > 0 else float('nan')):.2f}m") # Relaxed avg_ds
     print("-" * 60)
     print(f"Episodes with collision:  {n_collision}/{n_total}")
     print(f"Episodes passed w/o stop: {n_passed}/{n_total}")

@@ -708,6 +708,7 @@ def evaluate_lstm(
         ep_col = ep_stopped = ep_goal = ep_passed = ep_entered = ep_yv = False
         stop_counter = False
         curr_d_stop  = None
+        cor_d_stop = None
 
         while not (done or trunc):
             action, lstm_state = model.predict(
